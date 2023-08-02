@@ -33,6 +33,17 @@ void sigint_handler(int signo) {
 #endif
 
 
+struct llama_token_usage {
+    int prompt_tokens;
+    int completion_tokens;
+};
+
+struct llama_text_prediction {
+    char* result;
+    llama_token_usage* usage;
+};
+
+
 int get_embeddings(void* params_ptr, void* state_pr, float * res_embeddings) {
     gpt_params* params_p = (gpt_params*) params_ptr;
     llama_state* state = (llama_state*) state_pr;
@@ -115,12 +126,15 @@ int eval(void* params_ptr,void* state_pr,char *text) {
 }
 static llama_context ** g_ctx;
 
-int llama_predict(void* params_ptr, void* state_pr, char* result, bool debug) {
+int llama_predict(void* params_ptr, void* state_pr, void* result, bool debug) {
     gpt_params* params_p = (gpt_params*) params_ptr;
     llama_state* state = (llama_state*) state_pr;
     llama_context* ctx = state->ctx;
 
     gpt_params params = *params_p;
+
+
+    llama_text_prediction* prediction_p = (llama_text_prediction*) result;
 
     const int n_ctx = llama_n_ctx(ctx);
 
@@ -593,6 +607,10 @@ end:
     signal(SIGINT, SIG_DFL);
 #endif
 
+    // do this before the scary frees
+    prediction_p->usage->prompt_tokens = embd_inp.size();       // ???
+    prediction_p->usage->completion_tokens = embd.size();       // ?????????
+
     if (debug) {
         llama_print_timings(ctx);
         llama_reset_timings(ctx);
@@ -603,7 +621,7 @@ end:
 
     llama_backend_free();
 
-    strcpy(result, res.c_str()); 
+    strcpy(prediction_p->result, res.c_str()); 
     return 0;
 }
 

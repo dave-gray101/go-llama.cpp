@@ -12,12 +12,24 @@ import (
 	"strings"
 	"sync"
 	"unsafe"
+
+	"github.com/go-skynet/LocalAI/pkg/grpc"
 )
 
 type LLama struct {
 	state       unsafe.Pointer
 	embeddings  bool
 	contextSize int
+}
+
+type LLamaCppTokenUsage struct {
+	promptTokens     int32
+	completionTokens int32
+}
+
+type LLamaCppTextPrediction struct {
+	result []byte
+	usage  *LLamaCppTokenUsage
 }
 
 func New(model string, opts ...ModelOption) (*LLama, error) {
@@ -194,7 +206,7 @@ func (l *LLama) Eval(text string, opts ...PredictOption) error {
 	return nil
 }
 
-func (l *LLama) Predict(text string, opts ...PredictOption) (string, error) {
+func (l *LLama) Predict(text string, opts ...PredictOption) (grpc.TextPrediction, error) {
 	po := NewPredictOptions(opts...)
 
 	if po.TokenCallback != nil {
@@ -205,7 +217,11 @@ func (l *LLama) Predict(text string, opts ...PredictOption) (string, error) {
 	if po.Tokens == 0 {
 		po.Tokens = 99999999
 	}
-	out := make([]byte, po.Tokens)
+
+	out := LLamaCppTextPrediction{
+		result: make([]byte, po.Tokens),
+		usage:  &LLamaCppTokenUsage{},
+	}
 
 	reverseCount := len(po.StopPrompts)
 	reversePrompt := make([]*C.char, reverseCount)
@@ -228,11 +244,11 @@ func (l *LLama) Predict(text string, opts ...PredictOption) (string, error) {
 		C.CString(po.Grammar),
 		C.float(po.RopeFreqBase), C.float(po.RopeFreqScale), C.float(po.NegativePromptScale), C.CString(po.NegativePrompt),
 	)
-	ret := C.llama_predict(params, l.state, (*C.char)(unsafe.Pointer(&out[0])), C.bool(po.DebugMode))
+	ret := C.llama_predict(params, l.state, unsafe.Pointer(&out), C.bool(po.DebugMode))
 	if ret != 0 {
-		return "", fmt.Errorf("inference failed")
+		return grpc.TextPrediction{}, fmt.Errorf("inference failed")
 	}
-	res := C.GoString((*C.char)(unsafe.Pointer(&out[0])))
+	res := C.GoString((*C.char)(unsafe.Pointer(&(out.result))))
 
 	res = strings.TrimPrefix(res, " ")
 	res = strings.TrimPrefix(res, text)
@@ -248,7 +264,14 @@ func (l *LLama) Predict(text string, opts ...PredictOption) (string, error) {
 		setCallback(l.state, nil)
 	}
 
-	return res, nil
+	return grpc.TextPrediction{
+		Response: res,
+		Usage: grpc.TokenUsage{
+			PromptTokens:     out.usage.promptTokens,
+			CompletionTokens: out.usage.completionTokens,
+			TotalTokens:      1337,
+		},
+	}, nil
 }
 
 // CGo only allows us to use static calls from C to Go, we can't just dynamically pass in func's.
